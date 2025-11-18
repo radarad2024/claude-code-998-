@@ -1,0 +1,94 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: radiologist-db
+    environment:
+      POSTGRES_USER: radiologist
+      POSTGRES_PASSWORD: radiologist_password
+      POSTGRES_DB: radiologist_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - radiologist-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U radiologist"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: radiologist-redis
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - radiologist-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Backend API
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: radiologist-backend
+    environment:
+      DATABASE_URL: postgresql+asyncpg://radiologist:radiologist_password@postgres:5432/radiologist_db
+      REDIS_URL: redis://redis:6379
+      SECRET_KEY: ${SECRET_KEY:-your-secret-key-change-in-production}
+      PYTHONUNBUFFERED: 1
+    volumes:
+      - ./backend:/app
+      - model_weights:/app/model_weights
+      - dicom_storage:/app/storage/dicom
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - radiologist-network
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+  # Frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: radiologist-frontend
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    ports:
+      - "3000:3000"
+    environment:
+      - VITE_API_URL=http://localhost:8000
+    depends_on:
+      - backend
+    networks:
+      - radiologist-network
+    command: npm run dev -- --host
+
+volumes:
+  postgres_data:
+  redis_data:
+  model_weights:
+  dicom_storage:
+
+networks:
+  radiologist-network:
+    driver: bridge
